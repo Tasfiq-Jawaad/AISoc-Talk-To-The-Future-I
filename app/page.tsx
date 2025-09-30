@@ -32,9 +32,76 @@ export default function Home() {
     return { history, prompt };
   }
 
-  const sendNonStreaming = async (prompt: string) => {};
+  const sendNonStreaming = async (prompt: string) => {
+    const payload = buildPayload(prompt);
 
-  const sendStreaming = async (prompt: string) => {};
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      headers: { "Content-Type": "application/json" },
+    });
+    if (!res.ok) throw new Error("Request failed");
+
+    const data: { reply?: string; error?: string } = await res.json();
+    const reply = data.reply ?? "...";
+    setMessages((m) => [...m, { role: "assistant", content: reply }]);
+  };
+
+  const sendStreaming = async (prompt: string) => {
+    const payload = buildPayload(prompt);
+
+    // Add an assistant placeholder to stream into (no scrolling here).
+    setMessages((m) => [...m, { role: "assistant", content: "" }]);
+
+    const res = await fetch("/api/chat/stream", {
+      method: "POST",
+      body: JSON.stringify(payload),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    if (!res.ok || !res.body) {
+      throw new Error("Stream request failed");
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let assistantText = "";
+
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+
+      const lines = chunk.split("\n");
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        if (trimmed.startsWith("data: ")) {
+          const payload = trimmed.slice(6);
+          if (payload === "[DONE]") continue;
+          try {
+            const obj = JSON.parse(payload) as { token?: string };
+            if (obj.token) {
+              assistantText += obj.token;
+              // Update only the last assistant message
+              setMessages((prev) => {
+                const next = [...prev];
+                const lastIdx = next.length - 1;
+                next[lastIdx] = {
+                  ...next[lastIdx],
+                  content: assistantText,
+                };
+                return next;
+              });
+            }
+          } catch {
+            // ignore parse errors for keep-alives
+          }
+        }
+      }
+    }
+  };
 
   const onSend = async () => {
     const prompt = input.trim();
