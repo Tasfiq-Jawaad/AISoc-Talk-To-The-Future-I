@@ -5,8 +5,6 @@ import { useRef, useState } from "react";
 type Role = "user" | "assistant";
 type Msg = { role: Role; content: string };
 
-const MODEL_LABEL = "gemini-2.0-flash";
-
 export default function Home() {
   const [messages, setMessages] = useState<Msg[]>([
     {
@@ -18,13 +16,15 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [useStreaming, setUseStreaming] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<"gemini" | "ollama">(
+    "ollama"
+  );
 
   // Anchor used to scroll only when the user sends
   const bottomRef = useRef<HTMLDivElement | null>(null);
 
-  // Builds the request payload: history (all prior messages) and the new prompt
-  function buildPayload(prompt: string) {
-    // Exclude the new prompt from history. History is everything already in state.
+  // Builds the request payload for Gemini
+  function buildGeminiPayload(prompt: string) {
     const history = messages.map((m) => ({
       role: m.role,
       content: m.content,
@@ -33,7 +33,7 @@ export default function Home() {
   }
 
   const sendNonStreaming = async (prompt: string) => {
-    const payload = buildPayload(prompt);
+    const payload = buildGeminiPayload(prompt);
 
     const res = await fetch("/api/chat", {
       method: "POST",
@@ -48,7 +48,7 @@ export default function Home() {
   };
 
   const sendStreaming = async (prompt: string) => {
-    const payload = buildPayload(prompt);
+    const payload = buildGeminiPayload(prompt);
 
     // Add an assistant placeholder to stream into (no scrolling here).
     setMessages((m) => [...m, { role: "assistant", content: "" }]);
@@ -103,6 +103,56 @@ export default function Home() {
     }
   };
 
+  const sendOllamaStreaming = async (prompt: string) => {
+    const payloadMessages = [...messages, { role: "user", content: prompt }];
+
+    setMessages((m) => [...m, { role: "assistant", content: "" }]);
+    const res = await fetch("/api/ollama", {
+      method: "POST",
+      body: JSON.stringify({ messages: payloadMessages }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    if (!res.ok || !res.body) {
+      throw new Error("Stream request failed");
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let assistantText = "";
+    let buffer = "";
+
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (line.trim() === "") continue;
+        try {
+          const obj = JSON.parse(line);
+          if (obj.message && obj.message.content) {
+            assistantText += obj.message.content;
+            setMessages((prev) => {
+              const next = [...prev];
+              const lastIdx = next.length - 1;
+              next[lastIdx] = {
+                ...next[lastIdx],
+                content: assistantText,
+              };
+              return next;
+            });
+          }
+        } catch (e) {
+          console.error("Error parsing streaming JSON", e);
+        }
+      }
+    }
+  };
+
   const onSend = async () => {
     const prompt = input.trim();
     if (!prompt || isLoading) return;
@@ -121,10 +171,20 @@ export default function Home() {
 
     setIsLoading(true);
     try {
-      if (useStreaming) {
-        await sendStreaming(prompt);
+      if (selectedModel === "gemini") {
+        if (useStreaming) {
+          await sendStreaming(prompt);
+        } else {
+          await sendNonStreaming(prompt);
+        }
       } else {
-        await sendNonStreaming(prompt);
+        // ollama
+        if (useStreaming) {
+          await sendOllamaStreaming(prompt);
+        } else {
+          // Non-streaming for Ollama would go here
+          alert("Ollama non-streaming not implemented yet.");
+        }
       }
     } catch {
       setMessages((m) => [
@@ -171,8 +231,27 @@ export default function Home() {
           </div>
 
           <div className="flex items-center gap-4">
-            <div className="hidden text-xs text-gray-400 sm:block">
-              Model: {MODEL_LABEL}
+            <div className="flex items-center gap-2 rounded-lg border border-[#241617] bg-black/60 p-1">
+              <button
+                onClick={() => setSelectedModel("gemini")}
+                className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                  selectedModel === "gemini"
+                    ? "bg-[#f43f5e] text-white"
+                    : "text-gray-400 hover:bg-white/5"
+                }`}
+              >
+                Gemini
+              </button>
+              <button
+                onClick={() => setSelectedModel("ollama")}
+                className={`rounded-md px-3 py-1 text-xs font-medium transition-colors ${
+                  selectedModel === "ollama"
+                    ? "bg-[#f43f5e] text-white"
+                    : "text-gray-400 hover:bg-white/5"
+                }`}
+              >
+                Ollama
+              </button>
             </div>
             <label className="group inline-flex cursor-pointer items-center gap-2 text-sm">
               <span className="text-gray-300">Streaming</span>
